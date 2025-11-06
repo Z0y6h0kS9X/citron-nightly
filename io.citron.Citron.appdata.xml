@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.citron.Citron</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0+</project_license>
+  <developer_name>Citron Team</developer_name>
+  <name>Citron</name>
+  <summary>Optimized Citron build (packaged AppImage/AppBundle metadata)</summary>
+  <launchable type="desktop-id">citron.desktop</launchable>
+  <description>
+    <p>
+      Citron is a packaging variant produced from this repository for testing and
+      distribution. This AppStream file is copied into the AppDir at build time by the
+      packaging script.
+    </p>
+  </description>
+  <keywords>
+    <keyword>Emulator</keyword>
+    <keyword>Citron</keyword>
+    <keyword>Gaming</keyword>
+  </keywords>
+  <requires>
+    <item>
+      <p>OS: 64-bit Linux</p>
+    </item>
+  </requires>
+</component>

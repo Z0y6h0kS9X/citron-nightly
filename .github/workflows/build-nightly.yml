@@ -1,0 +1,514 @@
+name: Build
+
+concurrency:
+  group: build-citron-${{ github.ref }}-${{ github.event.inputs.job_to_run || 'all' }}
+  cancel-in-progress: true
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_to_run:
+        type: choice
+        description: 'Choose target build platform'
+        options:
+          - all
+          - windows
+          - appimage
+          - macos
+          - android
+          - bsd
+          - info
+        default: 'all'
+
+jobs:
+  info:
+    if: github.event.inputs.job_to_run == 'all' || github.event.inputs.job_to_run == 'info'
+    runs-on: ubuntu-latest
+    name: "Get info"
+    strategy:
+      matrix:
+        target: [Info]
+    steps:
+      - uses: actions/checkout@v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Get the latest release count
+        env:
+          GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+        run: |
+          api_url="https://api.github.com/repos/${{ github.repository }}"
+          latest_release_info=$(curl -H "Authorization: token $GH_TOKEN" "$api_url/releases/latest")
+          last_release_tag=$(echo "$latest_release_info" | jq -r '.tag_name')
+          echo "${last_release_tag}"
+          old_count="${last_release_tag##*-}"
+          echo "OLD_COUNT=$old_count" >> "$GITHUB_ENV"
+
+      - name: Generate changelog
+        run: |
+          chmod +x ./changelog.sh
+          ./changelog.sh
+
+      - name: Upload tag file
+        uses: actions/upload-artifact@v5.0.0
+        with:
+          name: tag
+          path: ~/tag
+
+      - name: Upload count file
+        uses: actions/upload-artifact@v5.0.0
+        with:
+          name: count
+          path: ~/count
+
+      - name: Upload changelog file
+        uses: actions/upload-artifact@v5.0.0
+        with:
+          name: changelog
+          path: ~/changelog
+
+      - name: Upload source code
+        uses: actions/upload-artifact@v5.0.0
+        with:
+          name: source
+          path: artifacts
+
+  appimage:
+    if: github.event.inputs.job_to_run == 'all' || github.event.inputs.job_to_run == 'appimage'
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: steamdeck
+            runs-on: ubuntu-latest
+            ccache: 'true'
+          - target: rog
+            runs-on: ubuntu-latest
+            ccache: 'true'
+          - target: common
+            runs-on: ubuntu-latest
+            ccache: 'true'
+          - target: legacy
+            runs-on: ubuntu-latest
+            ccache: 'true'
+          - target: aarch64
+            runs-on: ubuntu-24.04-arm
+            ccache: 'true'
+          - target: steamdeck-pgo
+            runs-on: ubuntu-latest
+            ccache: 'flase'
+          - target: rog-pgo
+            runs-on: ubuntu-latest
+            ccache: 'flase'
+          - target: common-pgo
+            runs-on: ubuntu-latest
+            ccache: 'flase'
+          - target: legacy-pgo
+            runs-on: ubuntu-latest
+            ccache: 'flase'
+    container: 
+      image: ghcr.io/pkgforge-dev/archlinux:latest
+      options: --privileged --device /dev/fuse
+    name: "Appimage (${{ matrix.target }})"
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_COMPILERCHECK: content
+      CCACHE_SLOPPINESS: time_macros
+    steps:
+      - uses: actions/checkout@v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        run: |
+          chmod +x ./linux-dependencies.sh
+          ./linux-dependencies.sh
+
+      - name: Clone Citron
+        run: |
+          git clone 'https://git.citron-emu.org/Citron/Emulator.git' ./citron
+
+      - name: Restore ccache for ${{ matrix.target }}
+        if: ${{ matrix.ccache == 'true'}}
+        uses: actions/cache/restore@v4
+        id: restore-ccache-appimage
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ runner.os }}-ccache-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-${{ matrix.target }}-
+
+      - name: Compile Citron ${{ matrix.target }}
+        run: |
+          chmod +x ./citron-appimage.sh
+          ./citron-appimage.sh ${{ matrix.target }}
+
+      - name: Save ccache for ${{ matrix.target }}
+        if: ${{ matrix.ccache == 'true' && github.ref_name == 'main' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.restore-ccache-appimage.outputs.cache-primary-key }}
+
+      - name: Upload appimage
+        uses: actions/upload-artifact@v5.0.0
+        with:
+          name: citron-${{ matrix.target}}-appimage
+          path: citron/appimage
+
+      - name: Upload appbundle
+        uses: actions/upload-artifact@v5.0.0
+        with:
+          name: citron-${{ matrix.target}}-appbundle
+          path: citron/appbundle
+
+  android:
+    if: github.event.inputs.job_to_run == 'all' || github.event.inputs.job_to_run == 'android'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [Replace, Coexist, Optimized, Legacy]
+    name: "Android (${{ matrix.target }})"
+    env:
+      TARGET: ${{ matrix.target }}
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_COMPILERCHECK: content
+      CCACHE_SLOPPINESS: time_macros
+    steps:
+      - uses: actions/checkout@v5.0.0
+
+      - name: Install dependencies
+        run: |
+          sudo rm /var/lib/man-db/auto-update
+          sudo apt-get update -y
+          sudo apt-get install ccache glslang-tools libvulkan-dev python3-requests -y
+
+      - name: Clone Citron
+        run: |
+          git clone https://git.citron-emu.org/Citron/Emulator.git citron
+
+      - name: Restore ccache for ${{ matrix.target }}
+        uses: actions/cache/restore@v4
+        id: restore-ccache-cache
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ runner.os }}-android-ccache-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-android-ccache-${{ matrix.target }}-
+
+      - name: Compile Citron Android
+        run: |
+          chmod +x ./citron-android.sh
+          ./citron-android.sh
+
+      - name: Save ccache for ${{ matrix.target }}
+        if: ${{ github.ref_name == 'main' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.restore-ccache-cache.outputs.cache-primary-key }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v5.0.0
+        with:
+          name: citron-android-${{ matrix.target }}
+          path: citron/src/android/artifacts/
+
+  windows:
+    if: github.event.inputs.job_to_run == 'all' || github.event.inputs.job_to_run == 'windows'
+    runs-on: ${{ matrix.runs-on }}
+    name: "Windows ${{ matrix.toolchain }} ${{ matrix.target }} (${{ matrix.arch }})"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+           - toolchain: msvc
+             target: normal
+             arch: x86_64
+             runs-on: windows-2022
+           - toolchain: msvc
+             target: normal
+             arch: arm64
+             runs-on: windows-11-arm
+           - toolchain: clang
+             target: normal
+             arch: x86_64
+             runs-on: windows-2022
+           - toolchain: clang
+             target: PGO
+             arch: x86_64
+             runs-on: windows-2022
+           - toolchain: msys2
+             target: PGO
+             arch: x86_64
+             runs-on: windows-2022
+           - toolchain: msys2
+             target: normal
+             arch: x86_64
+             runs-on: windows-2022
+    defaults:
+      run:
+        shell: ${{ matrix.toolchain == 'msys2' && 'msys2 {0}' || 'bash {0}' }}
+    env:
+      TOOLCHAIN: ${{ matrix.toolchain }}
+      ARCH: ${{ matrix.arch }}
+      TARGET: ${{ matrix.target }}
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_COMPILERCHECK: content
+      CCACHE_SLOPPINESS: time_macros
+    steps:
+      - uses: actions/checkout@v5.0.0
+
+      - name: Set up MSVC
+        if: ${{ matrix.toolchain != 'msys2' }}
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch }}
+
+      - name: Set up MSYS2
+        if: ${{ matrix.toolchain == 'msys2' }}
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: mingw64
+          update: true
+          cache: false
+          install: autoconf automake-wrapper automake autoconf-archive base-devel git libtool make p7zip zip unzip
+          pacboy: >-
+            boost:p ccache:p clang:p cmake:p glslang:p libusb:p lld:p llvm:p ninja:p qt6-base:p qt6-tools:p qt6-translations:p qt6-svg:p rapidjson:p toolchain:p python-pip:p
+
+      - name: Install Qt
+        if: ${{ matrix.toolchain != 'msys2' }}
+        uses: jurplel/install-qt-action@v4.3.0
+        with:
+          version: '6.9.3'
+          cache: 'true'
+
+      - name: Install vulkan-sdk
+        if: ${{ matrix.toolchain != 'msys2' }}
+        shell: powershell
+        run: |
+          ./install-vulkan-sdk.ps1
+          
+      - name: install ccache
+        if: ${{ matrix.toolchain != 'msys2' && matrix.target == 'normal' }}
+        shell: bash
+        run: |
+          choco install ccache -y --no-progress
+          
+      - name: Update LLVM
+        if: ${{ matrix.toolchain != 'msys2' && matrix.toolchain == 'clang' }}
+        shell: powershell
+        run: |
+          ./install-llvm.ps1
+          
+      - name: Clone Citron
+        run: |
+          git clone https://git.citron-emu.org/Citron/Emulator.git citron
+          cd ./citron
+          echo "VERSION=$(git rev-list --count HEAD)" >> "${GITHUB_ENV}"
+
+      - name: Restore ccache
+        if: ${{ matrix.target == 'normal' }}
+        uses: actions/cache/restore@v4
+        id: restore-ccache-windows
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ runner.os }}-ccache-${{ matrix.toolchain }}-${{ matrix.arch }}-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-${{ matrix.toolchain }}-${{ matrix.arch }}-
+
+      - name: Compile Citron Windows
+        run: |
+          chmod +x ./citron-windows.sh
+          ./citron-windows.sh
+
+      #  Generate installer step is disabled 
+      # - name: Generate installer
+      #   shell: cmd
+      #   working-directory: ${{ github.workspace }}/installer
+      #   run: |
+      #     set TOOLCHAIN=%TOOLCHAIN%
+      #     if /I "%TARGET%"=="PGO" set TOOLCHAIN=%TOOLCHAIN%-PGO
+      #     makensis /DPRODUCT_TOOLCHAIN=%TOOLCHAIN% /DPRODUCT_VARIANT=%ARCH% /DPRODUCT_VERSION=%VERSION% citron.nsi
+      #     mkdir artifacts 2>nul
+      #     move /y *.exe artifacts\
+
+      - name: Save ccache
+        if: ${{ matrix.target == 'normal' && github.ref_name == 'main' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.restore-ccache-windows.outputs.cache-primary-key }}
+
+      - name: Upload Citron 7z
+        uses: actions/upload-artifact@v5.0.0
+        with:
+          name: citron-windows-${{ matrix.toolchain }}-${{ matrix.target }}-${{ matrix.arch }}-7z
+          path: citron/build/artifacts/
+
+      # Installer upload step is disabled
+      # - name: Upload Citron installer
+      #   uses: actions/upload-artifact@v5.0.0
+      #   with:
+      #     name: citron-windows-${{ matrix.toolchain }}-${{ matrix.target }}-${{ matrix.arch }}-installer
+      #     path: installer/artifacts/
+
+  macos:
+    if: github.event.inputs.job_to_run == 'all' || github.event.inputs.job_to_run == 'macos'
+    runs-on: macos-latest
+    name: "MacOS (${{ matrix.target }})"
+    strategy:
+      matrix:
+        target: [arm64]
+    env:
+      TARGET: ${{ matrix.target }}
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_COMPILERCHECK: content
+      CCACHE_SLOPPINESS: time_macros
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Clone Citron
+        run: |
+          git clone https://git.citron-emu.org/Citron/Emulator.git citron
+
+      - name: Restore ccache for ${{ matrix.target }}
+        uses: actions/cache/restore@v4
+        id: restore-ccache-cache
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ runner.os }}-${{ matrix.target }}-ccache-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-ccache-
+
+      - name: Install dependencies
+        run: |
+          brew install --formula --quiet autoconf automake boost ccache glslang hidapi libiconv libtool nasm speexdsp vulkan-loader vulkan-headers vulkan-utility-libraries molten-vk
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: 6.7.3
+          cache: 'true'
+
+      - name: Compile Citron MacOS (${{ matrix.target }})
+        run: |
+          chmod +x ./citron-macos.sh
+          ./citron-macos.sh
+
+      - name: Upload
+        uses: actions/upload-artifact@v5.0.0
+        with:
+          name: citron-macos-${{ matrix.target }}
+          path: citron/build/artifacts/
+
+      - name: Save ccache for ${{ matrix.target }}
+        if: ${{ github.ref_name == 'main' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.restore-ccache-cache.outputs.cache-primary-key }}
+
+  bsd:
+    if: github.event.inputs.job_to_run == 'all' || github.event.inputs.job_to_run == 'bsd'
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [FreeBSD, Solaris]
+    env:
+      TARGET: ${{ matrix.target }}
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_COMPILERCHECK: content
+      CCACHE_SLOPPINESS: time_macros
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5.0.0
+        
+      - name: Clone Citron
+        run: |
+          git clone https://git.citron-emu.org/Citron/Emulator.git citron
+
+      - name: Restore ccache
+        if: matrix.target == 'FreeBSD'
+        uses: actions/cache/restore@v4
+        id: restore-ccache-freebsd
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ runner.os }}-${{ matrix.target }}-ccache-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-ccache-
+
+      - name: Compile Citron FreeBSD
+        if: matrix.target == 'FreeBSD'
+        uses: vmactions/freebsd-vm@v1.2.5
+        with:
+          usesh: true
+          envs: 'TARGET CCACHE_DIR CCACHE_COMPILERCHECK CCACHE_SLOPPINESS'
+          run: |
+            chmod +x ./BSD-dependencies.sh ./citron-BSD.sh
+            ./BSD-dependencies.sh
+            ./citron-BSD.sh
+
+      - name: Compile Citron Solaris
+        if: matrix.target == 'Solaris'
+        uses: vmactions/solaris-vm@v1.1.5
+        with:
+          usesh: true
+          envs: 'TARGET'
+          run: |
+            chmod +x ./BSD-dependencies.sh ./citron-BSD.sh
+            ./BSD-dependencies.sh && ./citron-BSD.sh
+
+      - name: Save ccache
+        if: matrix.target == 'FreeBSD' && github.ref_name == 'main'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.restore-ccache-freebsd.outputs.cache-primary-key }}
+
+      - name: Upload
+        uses: actions/upload-artifact@v5.0.0
+        with:
+          name: citron-${{ matrix.target }}
+          path: citron/build/artifacts/
+
+  release:
+    if: github.ref_name == 'main' && github.event.inputs.job_to_run == 'all'
+    name: "release"
+    needs: [info, appimage, windows, macos, android, bsd]
+    permissions:
+      actions: read
+      security-events: write
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v6.0.0
+        with:
+          pattern: "*"
+          merge-multiple: true
+
+      - name: Generate changelog
+        run: |
+          echo "TAG=$(cat tag)" >> "${GITHUB_ENV}"
+          echo "COUNT=$(cat count)" >> "${GITHUB_ENV}"
+          echo "BODY<<EOF" >> "${GITHUB_ENV}"
+          cat changelog >> "${GITHUB_ENV}"
+          echo "EOF" >> "${GITHUB_ENV}"
+
+      - name: Release Citron
+        uses: softprops/action-gh-release@v2.4.1
+        with:
+          name: "Citron Unofficial Nightly Release: ${{ env.COUNT }}"
+          tag_name: "${{ env.TAG }}"
+          body: "${{ env.BODY }}"
+          prerelease: false
+          draft: false
+          generate_release_notes: false
+          fail_on_unmatched_files: false
+          make_latest: true
+          files: |
+            *.AppImage*, *.AppBundle*, *.7z, *.tar.gz, *.exe, *.apk
