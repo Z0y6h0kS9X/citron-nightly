@@ -10,7 +10,7 @@ fi
 cd ./citron
 
 # hook the updater to check my repo
-git apply ../patches/update.patch
+# git apply ../patches/update.patch
 
 COUNT="$(git rev-list --count HEAD)"
 APP_NAME="Citron-${COUNT}-MacOS-${TARGET}"
