@@ -374,6 +374,9 @@ jobs:
         run: |
           git clone https://git.citron-emu.org/Citron/Emulator.git citron
 
+      - name: Initialize and Update Git Submodules
+        run: git submodule update --init --recursive
+
       - name: Restore ccache for ${{ matrix.target }}
         uses: actions/cache/restore@v4
         id: restore-ccache-cache
