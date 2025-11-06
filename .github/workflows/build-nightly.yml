@@ -385,7 +385,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew install --formula --quiet autoconf automake boost ccache glslang hidapi libiconv libtool nasm speexdsp vulkan-loader vulkan-headers vulkan-utility-libraries molten-vk
+          brew install --formula --quiet enet llvm nlohmann-json autoconf automake boost ccache glslang hidapi libiconv libtool nasm speexdsp vulkan-loader vulkan-headers vulkan-utility-libraries molten-vk
 
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
